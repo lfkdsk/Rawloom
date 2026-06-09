@@ -1,0 +1,51 @@
+# XcodeGen manifest for the Rawloom iOS app.
+#   brew install xcodegen && xcodegen generate && open Rawloom.xcodeproj
+# The app depends on the local RawloomCore Swift package (the algorithm core). Raw capture needs a
+# real device; the Simulator runs the synthetic capture source through the same pipeline.
+
+name: Rawloom
+options:
+  bundleIdPrefix: com.rawloom
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+
+packages:
+  RawloomCore:
+    path: .
+
+targets:
+  RawloomApp:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+    dependencies:
+      - package: RawloomCore
+        product: RawloomCore
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Rawloom
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        NSCameraUsageDescription: "Rawloom captures raw photo bursts to build computational photos."
+        NSPhotoLibraryAddUsageDescription: "Rawloom saves your processed photos."
+        # Expose the app's Documents so the saved .dng/.jpg are reachable from Finder and the Files app.
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.rawloom.app
+        GENERATE_INFOPLIST_FILE: NO
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "5.9"
+        # Automatic signing: simulator builds need no team; for a device, set your Team in Xcode's
+        # "Signing & Capabilities" (or pass DEVELOPMENT_TEAM=... -allowProvisioningUpdates on the CLI).
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 5CK6DU76P8

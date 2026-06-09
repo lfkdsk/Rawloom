@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fast sanity: the algorithm core compiles on the host. No Metal compile (shaders are runtime
+  # compiled), no simulator — just catches Swift breakage quickly.
+  host-build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
+      - name: Swift build (RawloomCore)
+        run: swift build
+
+  # Primary correctness gate: run the whole XCTest suite (incl. Metal GPU kernels) on an iOS
+  # Simulator, where Metal and XCTest are both available.
+  simulator-tests:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
+      - name: Show available simulators
+        run: xcrun simctl list devices available | grep -i iphone || true
+      - name: Run tests on the iOS Simulator
+        env:
+          # The script falls back to the first available iPhone if this exact device is absent.
+          SIM_NAME: iPhone 16
+        run: |
+          export DEVELOPER_DIR="$(xcode-select -p)"
+          ./scripts/test-sim.sh
+      - name: Upload result bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sim-tests-xcresult
+          path: .build/sim-tests.xcresult
+          if-no-files-found: ignore
