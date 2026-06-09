@@ -29,13 +29,18 @@ public enum GainMap {
     /// - Parameters:
     ///   - sdrSRGB: interleaved RGBA floats, sRGB-encoded `[0,1]` (the finished display image).
     ///   - hdrLinear: interleaved RGBA floats, **linear** light (the pre-tone-map rendition; may exceed 1).
-    /// - Returns: a single-channel 8-bit gain map (`width*height` bytes, row-major) and its metadata.
+    ///   - downsample: integer factor by which the gain map is smaller than the base. Ultra HDR allows a
+    ///     sub-resolution map (decoders upsample it), which shrinks the file at negligible cost. `1` =
+    ///     full resolution. `min`/`max` are always measured at full resolution so the range is exact.
+    /// - Returns: the single-channel 8-bit gain map (row-major) with its own dimensions, and metadata.
     public static func compute(
         sdrSRGB: [Float], hdrLinear: [Float], width: Int, height: Int,
-        maxStops: Float = 6, offset: Float = 1.0 / 64
-    ) -> (pixels: [UInt8], metadata: GainMapMetadata) {
+        downsample: Int = 1, maxStops: Float = 6, offset: Float = 1.0 / 64
+    ) -> (pixels: [UInt8], width: Int, height: Int, metadata: GainMapMetadata) {
         precondition(sdrSRGB.count == width * height * 4 && hdrLinear.count == width * height * 4)
         let n = width * height
+
+        // 1. Per-pixel log2 recovery at full resolution, tracking the exact range.
         var recovery = [Float](repeating: 0, count: n)
         var gmin = Float.greatestFiniteMagnitude
         var gmax = -Float.greatestFiniteMagnitude
@@ -51,10 +56,27 @@ public enum GainMap {
         if !(gmax > gmin) { gmax = gmin + 1e-4 }   // guard a degenerate (flat) range
         let range = gmax - gmin
 
-        var pixels = [UInt8](repeating: 0, count: n)
-        for i in 0..<n {
-            let m = (recovery[i] - gmin) / range
-            pixels[i] = UInt8((min(max(m, 0), 1) * 255).rounded())
+        // 2. Box-average recovery into the (optionally smaller) gain-map grid, then quantise.
+        let ds = max(1, downsample)
+        let gw = max(1, (width + ds - 1) / ds)
+        let gh = max(1, (height + ds - 1) / ds)
+        var pixels = [UInt8](repeating: 0, count: gw * gh)
+        for gy in 0..<gh {
+            for gx in 0..<gw {
+                var acc: Float = 0, cnt: Float = 0
+                for dy in 0..<ds {
+                    let y = gy * ds + dy
+                    if y >= height { break }
+                    for dx in 0..<ds {
+                        let x = gx * ds + dx
+                        if x >= width { break }
+                        acc += recovery[y * width + x]
+                        cnt += 1
+                    }
+                }
+                let m = (acc / max(cnt, 1) - gmin) / range
+                pixels[gy * gw + gx] = UInt8((min(max(m, 0), 1) * 255).rounded())
+            }
         }
 
         let meta = GainMapMetadata(
@@ -62,7 +84,7 @@ public enum GainMap {
             offsetSDR: offset, offsetHDR: offset,
             hdrCapacityMin: 0, hdrCapacityMax: max(gmax, 0)
         )
-        return (pixels, meta)
+        return (pixels, gw, gh, meta)
     }
 
     /// Reconstruct the HDR luminance multiplier a decoder would apply, for a stored byte. Used by tests

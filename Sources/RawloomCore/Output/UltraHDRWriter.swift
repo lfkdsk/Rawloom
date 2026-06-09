@@ -20,18 +20,20 @@ public enum UltraHDRWriter {
         return primary + gm
     }
 
-    /// Encode interleaved sRGB RGBA (SDR) + linear RGBA (HDR) into one Ultra HDR JPEG. Returns `nil`
-    /// only if the underlying JPEG encode fails.
+    /// Encode interleaved sRGB RGBA (SDR) + linear RGBA (HDR) into one Ultra HDR JPEG. The gain map is
+    /// written at `1/downsample` resolution (decoders upsample it). Returns `nil` only if the underlying
+    /// JPEG encode fails.
     public static func encode(
-        sdrSRGB: [Float], hdrLinear: [Float], width: Int, height: Int, quality: CGFloat = 0.95
+        sdrSRGB: [Float], hdrLinear: [Float], width: Int, height: Int,
+        downsample: Int = 2, quality: CGFloat = 0.95
     ) -> Data? {
         guard let sdr = JPEGEncoder.encode(rgba: sdrSRGB, width: width, height: height, quality: quality)
         else { return nil }
-        let (gmPixels, meta) = GainMap.compute(sdrSRGB: sdrSRGB, hdrLinear: hdrLinear,
-                                               width: width, height: height)
-        guard let gmJPEG = encodeGray8(gmPixels, width: width, height: height, quality: quality)
+        let gm = GainMap.compute(sdrSRGB: sdrSRGB, hdrLinear: hdrLinear,
+                                 width: width, height: height, downsample: downsample)
+        guard let gmJPEG = encodeGray8(gm.pixels, width: gm.width, height: gm.height, quality: quality)
         else { return nil }
-        return assemble(sdrJPEG: sdr, gainMapJPEG: gmJPEG, metadata: meta)
+        return assemble(sdrJPEG: sdr, gainMapJPEG: gmJPEG, metadata: gm.metadata)
     }
 
     // MARK: - Grayscale JPEG

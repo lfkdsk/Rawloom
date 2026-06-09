@@ -21,7 +21,8 @@ final class GainMapTests: XCTestCase {
             sdr[i * 4 + 3] = 1; hdr[i * 4 + 3] = 1
         }
 
-        let (pixels, meta) = GainMap.compute(sdrSRGB: sdr, hdrLinear: hdr, width: w, height: h)
+        let (pixels, gw, gh, meta) = GainMap.compute(sdrSRGB: sdr, hdrLinear: hdr, width: w, height: h)
+        XCTAssertEqual(gw, w); XCTAssertEqual(gh, h)   // downsample 1 ⇒ full-resolution map
 
         XCTAssertEqual(meta.gainMapMin, 0, accuracy: 0.02)
         XCTAssertEqual(meta.gainMapMax, 1.935, accuracy: 0.05)   // log2((1+1/64)/(0.25+1/64))
@@ -33,6 +34,30 @@ final class GainMapTests: XCTestCase {
         let rec = GainMap.decodeRecovery(255, meta)
         let hdrRec = (Float(0.25) + meta.offsetSDR) * pow(2, rec) - meta.offsetHDR
         XCTAssertEqual(hdrRec, 1.0, accuracy: 0.02)
+    }
+
+    /// A downsampled gain map has `1/ds` dimensions, the same (full-res-measured) range, and a matching
+    /// average — so it carries the same HDR boost in a smaller image.
+    func testGainMapDownsample() {
+        let w = 16, h = 16, n = w * h
+        var sdr = [Float](repeating: 0, count: n * 4)
+        var hdr = [Float](repeating: 0, count: n * 4)
+        for i in 0..<n {
+            let v = Float(i) / Float(n)
+            for c in 0..<3 { sdr[i * 4 + c] = v; hdr[i * 4 + c] = GainMap.srgbDecode(v) * 4 }  // 2-stop boost
+            sdr[i * 4 + 3] = 1; hdr[i * 4 + 3] = 1
+        }
+        let g1 = GainMap.compute(sdrSRGB: sdr, hdrLinear: hdr, width: w, height: h, downsample: 1)
+        let g4 = GainMap.compute(sdrSRGB: sdr, hdrLinear: hdr, width: w, height: h, downsample: 4)
+
+        XCTAssertEqual(g1.width, 16); XCTAssertEqual(g1.height, 16)
+        XCTAssertEqual(g4.width, 4); XCTAssertEqual(g4.height, 4)
+        XCTAssertEqual(g4.pixels.count, 16)
+        XCTAssertEqual(g4.metadata.gainMapMax, g1.metadata.gainMapMax, accuracy: 1e-6) // range is full-res
+        // Box-averaging preserves the overall level.
+        let mean1 = g1.pixels.reduce(0) { $0 + Int($1) } / g1.pixels.count
+        let mean4 = g4.pixels.reduce(0) { $0 + Int($1) } / g4.pixels.count
+        XCTAssertEqual(Double(mean4), Double(mean1), accuracy: 8)
     }
 
     /// `insertXMP` must splice a well-formed APP1 XMP segment immediately after SOI.
