@@ -6,9 +6,9 @@ import Metal
 public struct ProcessedImage {
     /// Finished, sRGB-encoded display image (`rgba32Float`, values in `[0,1]`) → JPEG (SDR base).
     public let displayImage: MTLTexture
-    /// Pre-tone-map HDR rendition (`rgba32Float`, linear sRGB-primary; highlights exceed 1), same size
-    /// as `displayImage` → the SDR base's companion for the Ultra HDR gain map (`docs/PIPELINE.md` §7).
-    public let hdrImage: MTLTexture
+    /// Precomputed Ultra HDR gain map — the HDR companion of `displayImage`, built in `process` so the
+    /// full-res HDR float texture isn't carried past finishing (`docs/PIPELINE.md` §7).
+    public let gainMap: GainMapData
     /// Merged, low-noise, linear Bayer mosaic (`r32Float`, normalised) → computed-raw DNG.
     public let mergedBayer: MTLTexture
     public let width: Int
@@ -19,6 +19,8 @@ public struct ProcessedImage {
     public let referenceMetadata: RawImageMetadata
     /// The exposure gain ("memorised gain") applied in finishing.
     public let exposureGain: Float
+    /// Burst length (frames merged) — scales the DNG NoiseProfile by the merge's ~1/N variance cut.
+    public let mergedFrameCount: Int
 }
 
 /// End-to-end orchestration of the Project-Indigo pipeline:
@@ -68,14 +70,23 @@ public final class IndigoPipeline {
         finishCB.commit()
         finishCB.waitUntilCompleted()
 
+        // Build the Ultra HDR gain map now, while both renditions are on hand, so only the small map —
+        // not the full-res HDR float texture — travels on in `ProcessedImage`.
+        let gainMap = GainMap.data(
+            sdrSRGB: context.readRGBA(finished.display),
+            hdrLinear: context.readRGBA(finished.hdr),
+            width: finished.display.width, height: finished.display.height
+        )
+
         return ProcessedImage(
             displayImage: finished.display,
-            hdrImage: finished.hdr,
+            gainMap: gainMap,
             mergedBayer: merge.mergedBayer,
             width: merge.width, height: merge.height,
             referenceIndex: referenceIndex,
             referenceMetadata: referenceMeta,
-            exposureGain: exposure
+            exposureGain: exposure,
+            mergedFrameCount: frames.count
         )
     }
 

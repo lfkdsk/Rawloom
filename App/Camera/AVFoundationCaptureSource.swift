@@ -120,14 +120,34 @@ final class AVFoundationCaptureSource: NSObject, CaptureSource {
     /// 0.5× / 1× / 2× / 5× presets: for each target pick the widest optical lens whose native zoom is
     /// ≤ the target, then crop digitally on top. Skips targets the hardware can't reach.
     private static func buildPresets(_ infos: [LensInfo]) -> [CameraLens] {
-        let targets: [CGFloat] = [0.5, 1, 2, 5]
-        return targets.compactMap { t in
-            guard let lens = infos.filter({ $0.rel <= t + 0.08 }).max(by: { $0.rel < $1.rel }) else { return nil }
-            let vzf = t / lens.rel
-            guard vzf >= 0.99, vzf <= lens.maxZoom else { return nil }
-            return CameraLens(id: "z\(t)", label: CameraLens.label(displayZoom: t),
-                              deviceType: lens.type, videoZoomFactor: vzf, displayZoom: t)
+        var presets: [CameraLens] = []
+        var seen = Set<Int>()
+        func add(_ display: CGFloat, _ lens: LensInfo, _ vzf: CGFloat) {
+            let key = Int((display * 10).rounded())
+            guard !seen.contains(key), vzf >= 0.99, vzf <= lens.maxZoom else { return }
+            seen.insert(key)
+            presets.append(CameraLens(id: "z\(display)", label: CameraLens.label(displayZoom: display),
+                                      deviceType: lens.type, videoZoomFactor: vzf, displayZoom: display))
         }
+        // One preset per physical lens, snapped to a conventional value (0.5 / 1 / 2 / 5 …). Snapping
+        // up means a tiny digital crop, so each lens — including the ultra-wide — always yields a preset.
+        for lens in infos.sorted(by: { $0.rel < $1.rel }) {
+            let nice = niceZoom(lens.rel)
+            add(nice, lens, max(1, nice / lens.rel))
+        }
+        // A digital 2× on the wide lens to fill the gap up to a longer tele.
+        if let wide = infos.first(where: { $0.type == .builtInWideAngleCamera }),
+           infos.contains(where: { $0.rel > 2.3 }) {
+            add(2, wide, 2)
+        }
+        return presets.sorted { $0.displayZoom < $1.displayZoom }
+    }
+
+    /// Snap a measured lens ratio to a conventional zoom label value.
+    private static func niceZoom(_ rel: CGFloat) -> CGFloat {
+        if rel < 0.75 { return 0.5 }
+        if rel < 1.25 { return 1 }
+        return rel.rounded()
     }
 
     // MARK: Lens & zoom
@@ -248,7 +268,13 @@ final class AVFoundationCaptureSource: NSObject, CaptureSource {
     func resetAutoExposure() {
         manualExposureActive = false
         configureDevice { d in
+            // Return metering to the centre and to continuous auto (clears a tapped point / custom /
+            // locked exposure), and drop any EV bias — a full "back to auto".
+            if d.isExposurePointOfInterestSupported {
+                d.exposurePointOfInterest = CGPoint(x: 0.5, y: 0.5)
+            }
             if d.isExposureModeSupported(.continuousAutoExposure) { d.exposureMode = .continuousAutoExposure }
+            d.setExposureTargetBias(0)
         }
     }
 
@@ -282,6 +308,7 @@ final class AVFoundationCaptureSource: NSObject, CaptureSource {
 
     func resetAutoFocus() {
         configureDevice { d in
+            if d.isFocusPointOfInterestSupported { d.focusPointOfInterest = CGPoint(x: 0.5, y: 0.5) }
             if d.isFocusModeSupported(.continuousAutoFocus) { d.focusMode = .continuousAutoFocus }
         }
     }
@@ -339,7 +366,7 @@ final class AVFoundationCaptureSource: NSObject, CaptureSource {
 
         // The merge now commits one command buffer per frame (bounded memory), so Night can use a long
         // burst again without OOM / GPU-watchdog kills. See Merger.merge.
-        let count = mode == .night ? 16 : 8
+        let count = mode == .night ? 16 : 5
         var frames: [RawFrame] = []
         frames.reserveCapacity(count)
         for _ in 0..<count {

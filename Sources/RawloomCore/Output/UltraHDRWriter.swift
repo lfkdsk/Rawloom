@@ -126,5 +126,17 @@ public extension JPEGEncoder {
             sdrSRGB: context.readRGBA(sdr), hdrLinear: context.readRGBA(hdr),
             width: sdr.width, height: sdr.height, quality: quality)
     }
+
+    /// Convenience: build an Ultra HDR JPEG from a finished SDR display texture and a *precomputed* gain
+    /// map (the pipeline builds the map; the app only encodes + assembles).
+    static func encodeUltraHDR(sdr: MTLTexture, gainMap: GainMapData, context: MetalContext,
+                               quality: CGFloat = 0.95) -> Data? {
+        guard let sdrJPEG = JPEGEncoder.encode(rgba: context.readRGBA(sdr),
+                                               width: sdr.width, height: sdr.height, quality: quality),
+              let gmJPEG = UltraHDRWriter.encodeGray8(gainMap.pixels, width: gainMap.width,
+                                                      height: gainMap.height, quality: quality)
+        else { return nil }
+        return UltraHDRWriter.assemble(sdrJPEG: sdrJPEG, gainMapJPEG: gmJPEG, metadata: gainMap.metadata)
+    }
 }
 #endif

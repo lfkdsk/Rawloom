@@ -103,7 +103,7 @@ struct ManualControlPanel: View {
         switch c {
         case .focus:   return vm.focusManual ? String(format: "%.2f", vm.lensPosition) : "自动"
         case .wb:      return vm.wbManual ? "\(Int(vm.kelvin))K" : "自动"
-        case .ev:      return String(format: "%+.1f", vm.ev)
+        case .ev:      return abs(vm.ev) < 0.05 ? "自动" : String(format: "%+.1f", vm.ev)
         case .iso:     return vm.exposureManual ? String(format: "%.0f", vm.iso) : "自动"
         case .shutter: return vm.exposureManual ? shutterLabel : "自动"
         }

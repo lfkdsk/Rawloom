@@ -102,6 +102,21 @@ final class OutputTests: XCTestCase {
         XCTAssertEqual(rationals(dng, exif[33434]!).first ?? .nan, 1.0 / 120, accuracy: 1e-4) // ExposureTime
     }
 
+    /// NoiseProfile must scale down by 1/frameCount to reflect the merge's variance reduction.
+    func testDNGNoiseProfileScalesWithFrameCount() {
+        let w = 4, h = 4
+        let noise = NoiseModel(a: 3.0e-5, b: 8.0e-7)
+        let meta = RawImageMetadata(
+            cfa: .rggb, blackLevel: SIMD4(repeating: 0), whiteLevel: 65535,
+            iso: 100, exposureDuration: 0.01, timestamp: 0, noise: noise
+        )
+        let bayer = [Float](repeating: 0.5, count: w * h)
+        let dng = DNGWriter.write(normalizedBayer: bayer, width: w, height: h, metadata: meta, frameCount: 8)
+        let np = doubles(dng, readIFD(dng, at: u32(dng, 4))[51041]!)
+        XCTAssertEqual(np[0], Double(noise.a) / 8, accuracy: 1e-12)
+        XCTAssertEqual(np[1], Double(noise.b) / 8, accuracy: 1e-12)
+    }
+
     func testJPEGEncodes() {
         let w = 16, h = 16
         var rgba = [Float](repeating: 1, count: w * h * 4)

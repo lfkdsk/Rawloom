@@ -22,6 +22,11 @@ struct GalleryView: View {
                         LazyVGrid(columns: columns, spacing: 3) {
                             ForEach(urls, id: \.self) { url in
                                 Button { editing = IdentifiableURL(url: url) } label: { GalleryThumb(url: url) }
+                                    .contextMenu {
+                                        Button(role: .destructive) { delete(url) } label: {
+                                            Label("Delete", systemImage: "trash")
+                                        }
+                                    }
                             }
                         }.padding(3)
                     }
@@ -48,6 +53,14 @@ struct GalleryView: View {
 
     private func modified(_ u: URL) -> Date {
         (try? u.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+    }
+
+    /// Remove a shot and its sibling DNG (same basename) from the app's Documents, then refresh.
+    private func delete(_ url: URL) {
+        try? FileManager.default.removeItem(at: url)
+        let dng = url.deletingPathExtension().appendingPathExtension("dng")
+        try? FileManager.default.removeItem(at: dng)
+        withAnimation { load() }
     }
 }
 

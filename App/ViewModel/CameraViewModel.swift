@@ -130,6 +130,7 @@ final class CameraViewModel: ObservableObject {
             let url = dir.appendingPathComponent("rawloom_proraw_\(Int(Date().timeIntervalSince1970)).dng")
             try data.write(to: url)
             lastDNGURL = url
+            PhotoLibrary.save(jpeg: nil, dng: url) // → camera roll
             latestResult = Self.thumbnail(fromDNG: data)
             resultOrientation = .up // CIImage applies the DNG's orientation tag
             debugText = "ProRAW DNG · \(data.count / 1_048_576) MB"
@@ -265,6 +266,7 @@ final class CameraViewModel: ObservableObject {
                 let (image, means) = Self.makeCGImage(from: processed.displayImage, context: pipeline.context)
                 let debug = Self.debugReadout(processed: processed, outputMeans: means)
                 let urls = try? Self.save(processed: processed, context: pipeline.context, format: format)
+                if !synthetic { PhotoLibrary.save(jpeg: urls?.jpeg, dng: urls?.dng) } // → camera roll
                 DispatchQueue.main.async {
                     guard let self else { return }
                     self.latestResult = image
@@ -297,7 +299,7 @@ final class CameraViewModel: ObservableObject {
             // Ultra HDR (hybrid SDR+HDR gain map) when requested; plain SDR JPEG otherwise. Both are
             // ordinary .jpg files — the Ultra HDR one degrades to its SDR base in non-HDR viewers.
             let jpeg = format.contains(.hdr)
-                ? JPEGEncoder.encodeUltraHDR(sdr: processed.displayImage, hdr: processed.hdrImage, context: context)
+                ? JPEGEncoder.encodeUltraHDR(sdr: processed.displayImage, gainMap: processed.gainMap, context: context)
                 : JPEGEncoder.encode(displayTexture: processed.displayImage, context: context)
             if let jpeg {
                 let url = dir.appendingPathComponent("rawloom_\(stamp).jpg")
@@ -308,7 +310,8 @@ final class CameraViewModel: ObservableObject {
         if format.contains(.dng) {
             let dng = DNGWriter.write(mergedBayer: processed.mergedBayer, context: context,
                                       metadata: processed.referenceMetadata,
-                                      exposureGain: processed.exposureGain)
+                                      exposureGain: processed.exposureGain,
+                                      frameCount: processed.mergedFrameCount)
             let url = dir.appendingPathComponent("rawloom_\(stamp).dng")
             try dng.write(to: url)
             dngURL = url

@@ -18,6 +18,16 @@ public struct GainMapMetadata: Sendable, Equatable {
     public var hdrCapacityMax: Float
 }
 
+/// A computed Ultra HDR gain map: the single-channel 8-bit image, its dimensions, and the metadata
+/// needed to assemble the file. Built in the pipeline so the full-res HDR float texture need not travel
+/// downstream.
+public struct GainMapData: Sendable {
+    public let pixels: [UInt8]
+    public let width: Int
+    public let height: Int
+    public let metadata: GainMapMetadata
+}
+
 /// Computes a single-channel HDR gain map from an SDR (sRGB-encoded) and an HDR (linear) rendition of
 /// the same scene — the basis of the portable Ultra HDR / ISO 21496-1 JPEG (`docs/PIPELINE.md` §7).
 ///
@@ -85,6 +95,16 @@ public enum GainMap {
             hdrCapacityMin: 0, hdrCapacityMax: max(gmax, 0)
         )
         return (pixels, gw, gh, meta)
+    }
+
+    /// Convenience around ``compute`` that returns a ``GainMapData``.
+    public static func data(
+        sdrSRGB: [Float], hdrLinear: [Float], width: Int, height: Int,
+        downsample: Int = 2, maxStops: Float = 6, offset: Float = 1.0 / 64
+    ) -> GainMapData {
+        let r = compute(sdrSRGB: sdrSRGB, hdrLinear: hdrLinear, width: width, height: height,
+                        downsample: downsample, maxStops: maxStops, offset: offset)
+        return GainMapData(pixels: r.pixels, width: r.width, height: r.height, metadata: r.metadata)
     }
 
     /// Reconstruct the HDR luminance multiplier a decoder would apply, for a stored byte. Used by tests

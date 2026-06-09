@@ -14,13 +14,16 @@ public enum DNGWriter {
     ///   - normalizedBayer: merged linear Bayer in `[0,1]`, row-major (`width*height`).
     ///   - exposureGain: the finishing "memorised gain" (≥1). Recorded as `BaselineExposure` so the
     ///     under-exposed linear raw opens at the intended brightness in an editor. Default 1 (0 EV).
+    ///   - frameCount: burst length. The `NoiseProfile` (per-frame model) is scaled by `1/frameCount` to
+    ///     reflect the merge's ~1/N variance reduction over static content. Default 1 (no scaling).
     /// - Returns: DNG file bytes.
     public static func write(
         normalizedBayer: [Float],
         width: Int,
         height: Int,
         metadata: RawImageMetadata,
-        exposureGain: Float = 1
+        exposureGain: Float = 1,
+        frameCount: Int = 1
     ) -> Data {
         precondition(normalizedBayer.count == width * height)
 
@@ -54,6 +57,10 @@ public enum DNGWriter {
 
         // BaselineExposure: the memorised under-exposure gain, in stops.
         let baselineExposure = log2(max(exposureGain, 1e-3))
+
+        // NoiseProfile reflects the *merged* raw: the robust merge cuts variance by ~1/N over static
+        // content, so scale the per-frame model down by the burst length (optimistic in motion regions).
+        let noiseScale = 1.0 / Double(max(frameCount, 1))
 
         // --- EXIF sub-IFD: exposure time + ISO ---
         var exif: [TIFFEntry] = [
@@ -92,7 +99,8 @@ public enum DNGWriter {
             .rational(50728, neutral),                       // AsShotNeutral
             .srational(50730, [baselineExposure]),           // BaselineExposure (memorised gain, stops)
             .short(50778, [21]),                             // CalibrationIlluminant1: D65
-            .double(51041, [Double(metadata.noise.a), Double(metadata.noise.b)]), // NoiseProfile (var=a·x+b)
+            .double(51041, [Double(metadata.noise.a) * noiseScale,
+                            Double(metadata.noise.b) * noiseScale]), // NoiseProfile (var=a·x+b), merged
         ]
         if let fm = metadata.forwardMatrix, fm.count == 9 {
             entries.append(.srational(50964, fm))            // ForwardMatrix1 (camera→XYZ D50)
@@ -184,10 +192,10 @@ public enum DNGWriter {
 public extension DNGWriter {
     /// Convenience: read a merged Bayer texture and write its DNG.
     static func write(mergedBayer: MTLTexture, context: MetalContext,
-                      metadata: RawImageMetadata, exposureGain: Float = 1) -> Data {
+                      metadata: RawImageMetadata, exposureGain: Float = 1, frameCount: Int = 1) -> Data {
         write(normalizedBayer: context.readFloats(mergedBayer),
               width: mergedBayer.width, height: mergedBayer.height,
-              metadata: metadata, exposureGain: exposureGain)
+              metadata: metadata, exposureGain: exposureGain, frameCount: frameCount)
     }
 }
 #endif
