@@ -26,7 +26,9 @@ public struct Finisher {
     public init(context: MetalContext) { self.context = context }
 
     /// - Parameter exposure: gain that compensates the capture under-exposure (the "memorised gain").
-    /// - Returns: an `.rgba32Float` display image, sRGB-encoded in `[0,1]`.
+    /// - Returns: the finished SDR `display` (`.rgba32Float`, sRGB-encoded `[0,1]`) and the pre-tone-map
+    ///   `hdr` rendition (`.rgba32Float`, linear sRGB-primary; highlights exceed 1) — the companion the
+    ///   Ultra HDR gain map is built from (`docs/PIPELINE.md` §7).
     public func finish(
         mergedBayer: MTLTexture,
         cfa: CFAPattern,
@@ -35,7 +37,7 @@ public struct Finisher {
         config: PipelineConfiguration,
         exposure: Float,
         in commandBuffer: MTLCommandBuffer
-    ) throws -> MTLTexture {
+    ) throws -> (display: MTLTexture, hdr: MTLTexture) {
         let w = mergedBayer.width, h = mergedBayer.height
         let red = cfa.redPosition
 
@@ -90,6 +92,8 @@ public struct Finisher {
             enc.setTexture(display, index: 3)
             enc.setBytes(&fparams, length: MemoryLayout<FinishParams>.stride, index: 0)
         }
-        return display
+        // `linear` is the WB+CCM+exposure rendition *before* tone mapping — highlights still exceed 1, so
+        // it is the HDR companion to the tone-mapped SDR `display`.
+        return (display, linear)
     }
 }

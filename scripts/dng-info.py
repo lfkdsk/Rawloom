@@ -14,8 +14,9 @@ TAGS = {
     33421: "CFARepeatPatternDim", 33422: "CFAPattern", 50706: "DNGVersion",
     50708: "UniqueCameraModel", 50714: "BlackLevel", 50717: "WhiteLevel",
     50721: "ColorMatrix1", 50722: "ColorMatrix2", 50728: "AsShotNeutral",
-    50778: "CalibrationIlluminant1", 50779: "CalibrationIlluminant2",
-    50964: "ForwardMatrix1", 50965: "ForwardMatrix2",
+    50730: "BaselineExposure", 50778: "CalibrationIlluminant1", 50779: "CalibrationIlluminant2",
+    50964: "ForwardMatrix1", 50965: "ForwardMatrix2", 51041: "NoiseProfile",
+    34665: "ExifIFD", 33434: "ExposureTime", 34855: "ISOSpeedRatings",
 }
 
 
@@ -43,6 +44,8 @@ def read_dng(path):
         if typ == 10:
             v = struct.unpack(bo + "%di" % (count * 2), raw)
             return [v[i] / v[i + 1] if v[i + 1] else 0 for i in range(0, len(v), 2)]
+        if typ == 12:
+            return list(struct.unpack(bo + "%dd" % count, raw))
         return list(raw)
 
     def read_ifd(off):
@@ -75,6 +78,9 @@ def read_dng(path):
         typ, count, voff = ifd0_entries[330]
         for i, sub in enumerate(read_value(typ, count, voff)):
             dump(read_ifd(int(sub)), f"SubIFD{i}")
+    if 34665 in ifd0_entries:
+        typ, count, voff = ifd0_entries[34665]
+        dump(read_ifd(int(read_value(typ, count, voff)[0])), "ExifIFD")
     print("\n→ For Rawloom: use BlackLevel, WhiteLevel, CFAPattern from the IFD whose "
           "PhotometricInterpretation == 32803; ColorMatrix1/ForwardMatrix1 + AsShotNeutral from IFD0.")
 

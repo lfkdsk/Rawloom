@@ -110,6 +110,14 @@ kernel void tone_finish(
     float l2 = luminance(tm);
     tm = mix(float3(l2), tm, p.saturation);
 
+    // Highlight desaturation: where one raw channel saturated before the others (large white/bright
+    // areas), white balance lifts R & B above G and the result reads pink/magenta. As the brightest
+    // channel approaches clipping, fade the pixel toward neutral (its own max) so blown highlights
+    // render white instead of pink. Threshold high so saturated mid-bright colours are untouched.
+    float hi = max(tm.r, max(tm.g, tm.b));
+    float desat = smoothstep(0.9, 1.05, hi);
+    tm = mix(tm, float3(hi), desat);
+
     float3 outc = srgb_encode(clamp(tm, 0.0, 1.0));
     displayOut.write(float4(outc, 1.0), gid);
 }

@@ -4,8 +4,11 @@ import Metal
 /// The result of processing a burst: the finished display image and the merged computed-raw, plus
 /// the metadata needed to write a DNG/JPEG.
 public struct ProcessedImage {
-    /// Finished, sRGB-encoded display image (`rgba32Float`, values in `[0,1]`) → JPEG.
+    /// Finished, sRGB-encoded display image (`rgba32Float`, values in `[0,1]`) → JPEG (SDR base).
     public let displayImage: MTLTexture
+    /// Pre-tone-map HDR rendition (`rgba32Float`, linear sRGB-primary; highlights exceed 1), same size
+    /// as `displayImage` → the SDR base's companion for the Ultra HDR gain map (`docs/PIPELINE.md` §7).
+    public let hdrImage: MTLTexture
     /// Merged, low-noise, linear Bayer mosaic (`r32Float`, normalised) → computed-raw DNG.
     public let mergedBayer: MTLTexture
     public let width: Int
@@ -43,31 +46,31 @@ public final class IndigoPipeline {
         let referenceIndex = ReferenceSelector.selectIndex(from: frames)
         let referenceMeta = frames[referenceIndex].metadata
 
-        let commandBuffer = try context.makeCommandBuffer()
-
-        // 2. robust multi-frame merge → low-noise linear Bayer.
+        // 2. robust multi-frame merge → low-noise linear Bayer. The merger manages its own command
+        //    buffers (one per frame) to keep peak memory independent of the burst length.
         let merger = Merger(context: context)
-        let merge = try merger.merge(frames: frames, referenceIndex: referenceIndex,
-                                     config: config, in: commandBuffer)
+        let merge = try merger.merge(frames: frames, referenceIndex: referenceIndex, config: config)
 
         // 3. finishing → display image. Exposure gain compensates the capture under-exposure.
         let exposure = Self.exposureGain(for: frames[referenceIndex], config: config)
         let finisher = Finisher(context: context)
-        let display = try finisher.finish(
+        let finishCB = try context.makeCommandBuffer()
+        let finished = try finisher.finish(
             mergedBayer: merge.mergedBayer,
             cfa: referenceMeta.cfa,
             whiteBalance: referenceMeta.whiteBalance,
             colorMatrix: referenceMeta.colorMatrix,
             config: config,
             exposure: exposure,
-            in: commandBuffer
+            in: finishCB
         )
 
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
+        finishCB.commit()
+        finishCB.waitUntilCompleted()
 
         return ProcessedImage(
-            displayImage: display,
+            displayImage: finished.display,
+            hdrImage: finished.hdr,
             mergedBayer: merge.mergedBayer,
             width: merge.width, height: merge.height,
             referenceIndex: referenceIndex,

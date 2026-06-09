@@ -115,6 +115,12 @@ enum RawPhotoConverter {
             timestamp: photo.timestamp.seconds.isFinite ? photo.timestamp.seconds : 0,
             whiteBalance: wb,
             colorMatrix: colorMatrix,
+            // Carry the source DNG's *native* colour tags through to the output DNG so external raw
+            // editors render correctly. (`colorMatrix` above is the folded camera→sRGB CCM the finisher
+            // uses; these are the raw XYZ↔camera tags the DNG container needs.)
+            colorMatrixXYZToCamera: sensor?.colorMatrix,
+            forwardMatrix: sensor?.forwardMatrix,
+            asShotNeutral: sensor?.asShotNeutral,
             noise: NoiseModel.estimated(iso: iso)
         )
         return RawFrame(width: width, height: height, samples: samples, metadata: metadata)

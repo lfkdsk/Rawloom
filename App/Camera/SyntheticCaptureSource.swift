@@ -13,6 +13,30 @@ final class SyntheticCaptureSource: CaptureSource {
     func start() async {}
     func stop() {}
 
+    // No hardware lenses / zoom in the Simulator.
+    var lenses: [CameraLens] { [] }
+    var selectedLensID: String? { nil }
+    func select(lensID: String) async {}
+    var zoomFactor: CGFloat { 1 }
+    var maxZoomFactor: CGFloat { 1 }
+    func setZoom(_ factor: CGFloat) {}
+
+    // No manual camera controls in the Simulator.
+    var manualCapabilities: ManualCapabilities { ManualCapabilities() }
+    func focusAndExpose(at point: CGPoint) {}
+    func setExposureFocusLocked(_ locked: Bool) {}
+    func setExposureBias(_ ev: Float) {}
+    func setManualExposure(iso: Float, shutter: Double) {}
+    func resetAutoExposure() {}
+    func setManualWhiteBalance(kelvin: Float) {}
+    func resetAutoWhiteBalance() {}
+    func setManualFocus(_ lensPosition: Float) {}
+    func resetAutoFocus() {}
+    var onHistogram: (([Float]) -> Void)?
+    var proRAWSupported: Bool { false }
+    func captureProRAW() async throws -> Data { throw CaptureError.rawUnsupported }
+    var flashMode: FlashMode = .off
+
     func captureBurst(mode: CaptureMode) async throws -> [RawFrame] {
         shotCounter &+= 1
         let scene = SyntheticScene.gradientBlobs(width: 512, height: 512)
