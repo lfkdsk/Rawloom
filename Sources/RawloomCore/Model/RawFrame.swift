@@ -19,6 +19,16 @@ public struct RawImageMetadata: Sendable {
     public var whiteBalance: WhiteBalanceGains
     /// Camera-native-RGB → linear-sRGB matrix (CCM). Identity if unknown.
     public var colorMatrix: ColorMatrix
+    /// DNG **ColorMatrix1** (XYZ → camera-native) as carried by the source DNG. Written verbatim into
+    /// the output computed-raw DNG so external editors (Lightroom, Preview) render colour correctly.
+    /// `nil` for synthetic input — the writer then falls back to a generic matrix. Distinct from
+    /// ``colorMatrix``, which is the *folded* camera→sRGB CCM the finisher consumes.
+    public var colorMatrixXYZToCamera: [Float]?
+    /// DNG **ForwardMatrix1** (white-balanced camera → XYZ D50), when the source DNG carried one.
+    public var forwardMatrix: [Float]?
+    /// Camera-native neutral (`AsShotNeutral`) when known; preferred over deriving it from
+    /// ``whiteBalance`` so the output DNG records the true as-shot white point.
+    public var asShotNeutral: SIMD3<Float>?
     /// Optional lens-shading correction map.
     public var lensShading: LensShadingMap?
     /// Sensor noise model at this ISO. Derived from `iso` if not supplied.
@@ -33,6 +43,9 @@ public struct RawImageMetadata: Sendable {
         timestamp: Double,
         whiteBalance: WhiteBalanceGains = .neutral,
         colorMatrix: ColorMatrix = .identity,
+        colorMatrixXYZToCamera: [Float]? = nil,
+        forwardMatrix: [Float]? = nil,
+        asShotNeutral: SIMD3<Float>? = nil,
         lensShading: LensShadingMap? = nil,
         noise: NoiseModel? = nil
     ) {
@@ -44,6 +57,9 @@ public struct RawImageMetadata: Sendable {
         self.timestamp = timestamp
         self.whiteBalance = whiteBalance
         self.colorMatrix = colorMatrix
+        self.colorMatrixXYZToCamera = colorMatrixXYZToCamera
+        self.forwardMatrix = forwardMatrix
+        self.asShotNeutral = asShotNeutral
         self.lensShading = lensShading
         self.noise = noise ?? NoiseModel.estimated(iso: iso)
     }

@@ -15,9 +15,7 @@ final class MergeTests: XCTestCase {
         let burst = SyntheticBurstGenerator.generate(scene: scene, spec: spec)
 
         let merger = Merger(context: ctx)
-        let cb = try ctx.makeCommandBuffer()
-        let result = try merger.merge(frames: burst.frames, referenceIndex: 0, config: .photo, in: cb)
-        cb.commit(); cb.waitUntilCompleted()
+        let result = try merger.merge(frames: burst.frames, referenceIndex: 0, config: .photo)
 
         let merged = ctx.readFloats(result.mergedBayer)
         let clean = normalized(burst.cleanReference)
@@ -48,9 +46,7 @@ final class MergeTests: XCTestCase {
         func mergedNormalized(robustness: Float) throws -> [Float] {
             var cfg = PipelineConfiguration.photo
             cfg.mergeRobustness = robustness
-            let cb = try ctx.makeCommandBuffer()
-            let r = try merger.merge(frames: burst.frames, referenceIndex: 0, config: cfg, in: cb)
-            cb.commit(); cb.waitUntilCompleted()
+            let r = try merger.merge(frames: burst.frames, referenceIndex: 0, config: cfg)
             return ctx.readFloats(r.mergedBayer)
         }
 

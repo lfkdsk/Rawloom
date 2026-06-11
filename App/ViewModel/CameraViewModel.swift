@@ -2,6 +2,8 @@ import Foundation
 import SwiftUI
 import Metal
 import CoreGraphics
+import CoreImage
+import CoreMotion
 import RawloomCore
 
 /// Drives the camera screen. A shutter press captures a burst, then hands it to a **serial background
@@ -14,13 +16,55 @@ final class CameraViewModel: ObservableObject {
     @Published var isCapturing = false          // shutter→frames in flight (brief); blocks re-shoot
     @Published var processingCount = 0          // background jobs still running
     @Published var statusText = "Ready"
-    @Published var latestResult: CGImage?       // newest finished image (thumbnail + tap-to-view)
+    @Published var latestResult: CGImage?       // newest finished image (thumbnail → gallery)
     @Published var resultOrientation: Image.Orientation = .up
-    @Published var showingResult = false        // full-screen view of `latestResult`
     @Published var debugText = ""
     @Published var lastJPEGURL: URL?
     @Published var lastDNGURL: URL?
     @Published private(set) var usingSyntheticSource = false
+
+    // Lens / zoom / format
+    @Published private(set) var lenses: [CameraLens] = []
+    @Published var selectedLensID: String?
+    @Published var zoom: CGFloat = 1
+    @Published private(set) var maxZoom: CGFloat = 1
+    @Published var outputFormat: OutputFormat = .rawAndJpeg
+    @Published var proRAWMode = false
+    var proRAWSupported: Bool { captureSource.proRAWSupported }
+    @Published var flashMode: FlashMode = .off { didSet { captureSource.flashMode = flashMode } }
+    @Published var aspect: AspectRatio = .full
+
+    func cycleFlash() {
+        let all = FlashMode.allCases
+        flashMode = all[((all.firstIndex(of: flashMode) ?? 0) + 1) % all.count]
+    }
+    func cycleAspect() {
+        let all = AspectRatio.allCases
+        aspect = all[((all.firstIndex(of: aspect) ?? 0) + 1) % all.count]
+    }
+
+    // Manual controls
+    @Published private(set) var manualCaps = ManualCapabilities()
+    @Published var exposureFocusLocked = false
+    @Published var ev: Float = 0
+    @Published var iso: Float = 100
+    @Published var shutter: Double = 1.0 / 120
+    @Published var kelvin: Float = 5200
+    @Published var lensPosition: Float = 0.5
+    @Published var exposureManual = false
+    @Published var wbManual = false
+    @Published var focusManual = false
+    /// Transient tap-to-focus reticle position (normalised 0…1), shown briefly.
+    @Published var focusReticle: CGPoint?
+    var supportsManual: Bool { manualCaps.supportsManual }
+
+    // Viewfinder aids
+    @Published var showGrid = false
+    @Published var showLevel = false
+    @Published var showHistogram = false
+    @Published var histogram: [Float] = []
+    @Published var rollRadians = 0.0
+    private let motion = CMMotionManager()
 
     let captureSource: CaptureSource
     private let pipeline: IndigoPipeline?
@@ -36,6 +80,14 @@ final class CameraViewModel: ObservableObject {
     func onAppear() async {
         guard pipeline != nil else { statusText = "No Metal GPU available"; return }
         await captureSource.start()
+        lenses = captureSource.lenses
+        selectedLensID = captureSource.selectedLensID
+        zoom = captureSource.zoomFactor
+        maxZoom = captureSource.maxZoomFactor
+        manualCaps = captureSource.manualCapabilities
+        iso = manualCaps.currentISO
+        shutter = manualCaps.currentShutter
+        lensPosition = manualCaps.currentLensPosition
         if usingSyntheticSource { statusText = "Simulator: synthetic capture" }
         // Used by scripts/screenshots.sh to capture a processed result automatically.
         let env = ProcessInfo.processInfo
@@ -44,11 +96,17 @@ final class CameraViewModel: ObservableObject {
         }
     }
 
-    func onDisappear() { captureSource.stop() }
+    func onDisappear() {
+        captureSource.stop()
+        stopMotion()
+        captureSource.onHistogram = nil
+    }
 
     /// Capture a burst, then return to the viewfinder immediately and process in the background.
     func shutter() async {
-        guard pipeline != nil, !isCapturing else { return }
+        guard !isCapturing else { return }
+        if proRAWMode { await captureProRAW(); return }
+        guard pipeline != nil else { statusText = "No Metal GPU available"; return }
         isCapturing = true
         statusText = mode == .night ? "Capturing night burst…" : "Capturing…"
         let mode = self.mode
@@ -62,6 +120,138 @@ final class CameraViewModel: ObservableObject {
         }
     }
 
+    /// Single Apple ProRAW capture: save the DNG straight to Documents (no merge), thumbnail from it.
+    private func captureProRAW() async {
+        isCapturing = true
+        statusText = "Capturing ProRAW…"
+        do {
+            let data = try await captureSource.captureProRAW()
+            let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            let url = dir.appendingPathComponent("rawloom_proraw_\(Int(Date().timeIntervalSince1970)).dng")
+            try data.write(to: url)
+            lastDNGURL = url
+            PhotoLibrary.save(jpeg: nil, dng: url) // → camera roll
+            latestResult = Self.thumbnail(fromDNG: data)
+            resultOrientation = .up // CIImage applies the DNG's orientation tag
+            debugText = "ProRAW DNG · \(data.count / 1_048_576) MB"
+            statusText = "Saved ProRAW"
+        } catch {
+            statusText = "Error: \(error.localizedDescription)"
+        }
+        isCapturing = false
+    }
+
+    private static func thumbnail(fromDNG data: Data) -> CGImage? {
+        guard let ci = CIImage(data: data, options: [.applyOrientationProperty: true]) else { return nil }
+        let scale = min(1, 1200 / max(ci.extent.width, ci.extent.height))
+        let small = ci.transformed(by: .init(scaleX: scale, y: scale))
+        return PhotoEditor.context.createCGImage(small, from: small.extent)
+    }
+
+    // MARK: Lens & zoom
+
+    func selectLens(_ id: String) {
+        guard id != selectedLensID else { return }
+        Task {
+            await captureSource.select(lensID: id)
+            selectedLensID = captureSource.selectedLensID
+            zoom = captureSource.zoomFactor
+            maxZoom = captureSource.maxZoomFactor
+        }
+    }
+
+    func setZoom(_ factor: CGFloat) {
+        let minZoom = lenses.map(\.displayZoom).min() ?? 1   // 0.5 when an ultra-wide is present
+        let clamped = min(max(factor, minZoom), maxZoom)
+        zoom = clamped
+        captureSource.setZoom(clamped)
+    }
+
+    // MARK: Manual controls
+
+    func focusExpose(at point: CGPoint) {
+        focusReticle = point
+        exposureManual = false
+        captureSource.focusAndExpose(at: point)
+        // Hide the reticle after a moment.
+        Task { try? await Task.sleep(nanoseconds: 1_200_000_000); if focusReticle == point { focusReticle = nil } }
+    }
+
+    func toggleAEAFLock() {
+        exposureFocusLocked.toggle()
+        captureSource.setExposureFocusLocked(exposureFocusLocked)
+    }
+
+    func setEV(_ value: Float) {
+        ev = value
+        captureSource.setExposureBias(value)
+    }
+
+    func applyManualExposure() {
+        exposureManual = true
+        captureSource.setManualExposure(iso: iso, shutter: shutter)
+    }
+
+    func resetExposure() {
+        exposureManual = false
+        ev = 0
+        captureSource.resetAutoExposure()
+        captureSource.setExposureBias(0)
+    }
+
+    func setKelvin(_ k: Float) {
+        kelvin = k
+        wbManual = true
+        captureSource.setManualWhiteBalance(kelvin: k)
+    }
+
+    func resetWhiteBalance() {
+        wbManual = false
+        captureSource.resetAutoWhiteBalance()
+    }
+
+    func setLensPosition(_ p: Float) {
+        lensPosition = p
+        focusManual = true
+        captureSource.setManualFocus(p)
+    }
+
+    func resetFocus() {
+        focusManual = false
+        captureSource.resetAutoFocus()
+    }
+
+    // MARK: Viewfinder aids
+
+    func toggleGrid() { showGrid.toggle() }
+
+    func toggleHistogram() {
+        showHistogram.toggle()
+        if showHistogram {
+            captureSource.onHistogram = { [weak self] bins in self?.histogram = bins }
+        } else {
+            captureSource.onHistogram = nil
+            histogram = []
+        }
+    }
+
+    func toggleLevel() {
+        showLevel.toggle()
+        if showLevel { startMotion() } else { stopMotion() }
+    }
+
+    private func startMotion() {
+        guard motion.isDeviceMotionAvailable, !motion.isDeviceMotionActive else { return }
+        motion.deviceMotionUpdateInterval = 1.0 / 30
+        motion.startDeviceMotionUpdates(to: .main) { [weak self] m, _ in
+            guard let self, let g = m?.gravity else { return }
+            // Roll about the device's long axis → horizon tilt.
+            self.rollRadians = atan2(g.x, g.y) - .pi
+        }
+    }
+
+    private func stopMotion() { motion.stopDeviceMotionUpdates() }
+
     // MARK: Background processing
 
     private func enqueueProcessing(frames: [RawFrame], mode: CaptureMode) {
@@ -69,12 +259,14 @@ final class CameraViewModel: ObservableObject {
         processingCount += 1
         statusText = "Processing…"
         let synthetic = usingSyntheticSource
+        let format = outputFormat
         processingQueue.async { [weak self] in
             do {
                 let processed = try pipeline.process(frames: frames, config: .preset(for: mode))
                 let (image, means) = Self.makeCGImage(from: processed.displayImage, context: pipeline.context)
                 let debug = Self.debugReadout(processed: processed, outputMeans: means)
-                let urls = try? Self.save(processed: processed, context: pipeline.context)
+                let urls = try? Self.save(processed: processed, context: pipeline.context, format: format)
+                if !synthetic { PhotoLibrary.save(jpeg: urls?.jpeg, dng: urls?.dng) } // → camera roll
                 DispatchQueue.main.async {
                     guard let self else { return }
                     self.latestResult = image
@@ -97,19 +289,33 @@ final class CameraViewModel: ObservableObject {
 
     // MARK: Output
 
-    private static func save(processed: ProcessedImage, context: MetalContext) throws -> (jpeg: URL?, dng: URL?) {
+    private static func save(processed: ProcessedImage, context: MetalContext,
+                             format: OutputFormat) throws -> (jpeg: URL?, dng: URL?) {
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let stamp = Int(Date().timeIntervalSince1970)
         var jpegURL: URL?
-        if let jpeg = JPEGEncoder.encode(displayTexture: processed.displayImage, context: context) {
-            let url = dir.appendingPathComponent("rawloom_\(stamp).jpg")
-            try jpeg.write(to: url)
-            jpegURL = url
+        var dngURL: URL?
+        if format.contains(.jpeg) {
+            // Ultra HDR (hybrid SDR+HDR gain map) when requested; plain SDR JPEG otherwise. Both are
+            // ordinary .jpg files — the Ultra HDR one degrades to its SDR base in non-HDR viewers.
+            let jpeg = format.contains(.hdr)
+                ? JPEGEncoder.encodeUltraHDR(sdr: processed.displayImage, gainMap: processed.gainMap, context: context)
+                : JPEGEncoder.encode(displayTexture: processed.displayImage, context: context)
+            if let jpeg {
+                let url = dir.appendingPathComponent("rawloom_\(stamp).jpg")
+                try jpeg.write(to: url)
+                jpegURL = url
+            }
         }
-        let dng = DNGWriter.write(mergedBayer: processed.mergedBayer, context: context,
-                                  metadata: processed.referenceMetadata)
-        let dngURL = dir.appendingPathComponent("rawloom_\(stamp).dng")
-        try dng.write(to: dngURL)
+        if format.contains(.dng) {
+            let dng = DNGWriter.write(mergedBayer: processed.mergedBayer, context: context,
+                                      metadata: processed.referenceMetadata,
+                                      exposureGain: processed.exposureGain,
+                                      frameCount: processed.mergedFrameCount)
+            let url = dir.appendingPathComponent("rawloom_\(stamp).dng")
+            try dng.write(to: url)
+            dngURL = url
+        }
         return (jpegURL, dngURL)
     }
 

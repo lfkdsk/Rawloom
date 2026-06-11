@@ -4,8 +4,11 @@ import Metal
 /// The result of processing a burst: the finished display image and the merged computed-raw, plus
 /// the metadata needed to write a DNG/JPEG.
 public struct ProcessedImage {
-    /// Finished, sRGB-encoded display image (`rgba32Float`, values in `[0,1]`) → JPEG.
+    /// Finished, sRGB-encoded display image (`rgba32Float`, values in `[0,1]`) → JPEG (SDR base).
     public let displayImage: MTLTexture
+    /// Precomputed Ultra HDR gain map — the HDR companion of `displayImage`, built in `process` so the
+    /// full-res HDR float texture isn't carried past finishing (`docs/PIPELINE.md` §7).
+    public let gainMap: GainMapData
     /// Merged, low-noise, linear Bayer mosaic (`r32Float`, normalised) → computed-raw DNG.
     public let mergedBayer: MTLTexture
     public let width: Int
@@ -16,6 +19,8 @@ public struct ProcessedImage {
     public let referenceMetadata: RawImageMetadata
     /// The exposure gain ("memorised gain") applied in finishing.
     public let exposureGain: Float
+    /// Burst length (frames merged) — scales the DNG NoiseProfile by the merge's ~1/N variance cut.
+    public let mergedFrameCount: Int
 }
 
 /// End-to-end orchestration of the Project-Indigo pipeline:
@@ -43,36 +48,45 @@ public final class IndigoPipeline {
         let referenceIndex = ReferenceSelector.selectIndex(from: frames)
         let referenceMeta = frames[referenceIndex].metadata
 
-        let commandBuffer = try context.makeCommandBuffer()
-
-        // 2. robust multi-frame merge → low-noise linear Bayer.
+        // 2. robust multi-frame merge → low-noise linear Bayer. The merger manages its own command
+        //    buffers (one per frame) to keep peak memory independent of the burst length.
         let merger = Merger(context: context)
-        let merge = try merger.merge(frames: frames, referenceIndex: referenceIndex,
-                                     config: config, in: commandBuffer)
+        let merge = try merger.merge(frames: frames, referenceIndex: referenceIndex, config: config)
 
         // 3. finishing → display image. Exposure gain compensates the capture under-exposure.
         let exposure = Self.exposureGain(for: frames[referenceIndex], config: config)
         let finisher = Finisher(context: context)
-        let display = try finisher.finish(
+        let finishCB = try context.makeCommandBuffer()
+        let finished = try finisher.finish(
             mergedBayer: merge.mergedBayer,
             cfa: referenceMeta.cfa,
             whiteBalance: referenceMeta.whiteBalance,
             colorMatrix: referenceMeta.colorMatrix,
             config: config,
             exposure: exposure,
-            in: commandBuffer
+            in: finishCB
         )
 
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
+        finishCB.commit()
+        finishCB.waitUntilCompleted()
+
+        // Build the Ultra HDR gain map now, while both renditions are on hand, so only the small map —
+        // not the full-res HDR float texture — travels on in `ProcessedImage`.
+        let gainMap = GainMap.data(
+            sdrSRGB: context.readRGBA(finished.display),
+            hdrLinear: context.readRGBA(finished.hdr),
+            width: finished.display.width, height: finished.display.height
+        )
 
         return ProcessedImage(
-            displayImage: display,
+            displayImage: finished.display,
+            gainMap: gainMap,
             mergedBayer: merge.mergedBayer,
             width: merge.width, height: merge.height,
             referenceIndex: referenceIndex,
             referenceMetadata: referenceMeta,
-            exposureGain: exposure
+            exposureGain: exposure,
+            mergedFrameCount: frames.count
         )
     }
 

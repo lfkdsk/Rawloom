@@ -39,6 +39,15 @@ final class PipelineEndToEndTests: XCTestCase {
         let mean = outLuma.reduce(0, +) / Double(outLuma.count)
         XCTAssertGreaterThan(mean, 0.15)
         XCTAssertLessThan(mean, 0.9)
+
+        // The Ultra HDR gain map is built in-pipeline: a sub-resolution single-channel map (default /2)
+        // with a valid HDR range, and the burst length is recorded for the DNG NoiseProfile.
+        XCTAssertEqual(out.gainMap.pixels.count, out.gainMap.width * out.gainMap.height)
+        XCTAssertEqual(out.gainMap.width, 64)   // 128 downsampled by 2
+        XCTAssertEqual(out.gainMap.height, 64)
+        XCTAssertGreaterThanOrEqual(out.gainMap.metadata.gainMapMax, 0)
+        XCTAssertLessThanOrEqual(out.gainMap.metadata.gainMapMax, 6)   // clamped to maxStops
+        XCTAssertEqual(out.mergedFrameCount, 8)
     }
 
     private func pearson(_ a: [Double], _ b: [Double]) -> Double {

@@ -16,6 +16,55 @@ protocol CaptureSource: AnyObject {
 
     /// Capture (or assemble, for ZSL) a burst for the given mode.
     func captureBurst(mode: CaptureMode) async throws -> [RawFrame]
+
+    // MARK: Lens & zoom (real camera only; synthetic returns empty / no-ops)
+
+    /// The selectable physical lenses, widest-first. Empty when there's nothing to switch.
+    var lenses: [CameraLens] { get }
+    /// `id` of the active lens.
+    var selectedLensID: String? { get }
+    /// Switch the active physical lens (reconfigures the session input).
+    func select(lensID: String) async
+    /// Current digital zoom factor on the active lens.
+    var zoomFactor: CGFloat { get }
+    /// Maximum (capped) digital zoom on the active lens.
+    var maxZoomFactor: CGFloat { get }
+    /// Set the digital zoom factor (clamped to the lens's range).
+    func setZoom(_ factor: CGFloat)
+
+    // MARK: Manual controls (real camera only; synthetic no-ops)
+
+    /// Ranges + current readings for the manual sliders.
+    var manualCapabilities: ManualCapabilities { get }
+    /// Tap-to-focus & meter at a normalised (0…1) point in the viewfinder.
+    func focusAndExpose(at point: CGPoint)
+    /// Lock/unlock auto-exposure & auto-focus at their current values.
+    func setExposureFocusLocked(_ locked: Bool)
+    /// Exposure compensation (EV) while staying in auto-exposure.
+    func setExposureBias(_ ev: Float)
+    /// Fully manual exposure (locks ISO + shutter).
+    func setManualExposure(iso: Float, shutter: Double)
+    func resetAutoExposure()
+    /// Manual white balance by colour temperature (Kelvin).
+    func setManualWhiteBalance(kelvin: Float)
+    func resetAutoWhiteBalance()
+    /// Manual focus by lens position (0 = near … 1 = far).
+    func setManualFocus(_ lensPosition: Float)
+    func resetAutoFocus()
+
+    /// Live 64-bin luma histogram (values normalised to the tallest bin), delivered on the main queue
+    /// from the preview stream. Set to `nil` to stop sampling. Synthetic never calls it.
+    var onHistogram: (([Float]) -> Void)? { get set }
+
+    // MARK: Apple ProRAW (single-shot; bypasses the multi-frame merge)
+
+    /// Whether the active camera supports Apple ProRAW.
+    var proRAWSupported: Bool { get }
+    /// Capture one Apple ProRAW frame and return its DNG bytes (no burst, no merge).
+    func captureProRAW() async throws -> Data
+
+    /// Flash mode applied to captures.
+    var flashMode: FlashMode { get set }
 }
 
 enum CaptureError: Error, LocalizedError {

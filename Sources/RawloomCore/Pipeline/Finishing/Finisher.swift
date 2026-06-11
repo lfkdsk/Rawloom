@@ -19,6 +19,15 @@ struct FinishParams {
     var saturation: Float
 }
 
+/// Mirror of `HDRToneParams` in `HDRTone.metal`.
+struct HDRToneParams {
+    var width: UInt32
+    var height: UInt32
+    var localContrast: Float
+    var saturation: Float
+    var ceiling: Float
+}
+
 /// Finishing: merged Bayer → display image (demosaic → WB → CCM → local/global tone → sRGB).
 /// See `docs/PIPELINE.md` §6.
 public struct Finisher {
@@ -26,7 +35,9 @@ public struct Finisher {
     public init(context: MetalContext) { self.context = context }
 
     /// - Parameter exposure: gain that compensates the capture under-exposure (the "memorised gain").
-    /// - Returns: an `.rgba32Float` display image, sRGB-encoded in `[0,1]`.
+    /// - Returns: the finished SDR `display` (`.rgba32Float`, sRGB-encoded `[0,1]`) and a tone-mapped
+    ///   `hdr` rendition (`.rgba32Float`, **linear**; highlights extend past 1 to the HDR ceiling) —
+    ///   the companion the Ultra HDR gain map is built from (`docs/PIPELINE.md` §7).
     public func finish(
         mergedBayer: MTLTexture,
         cfa: CFAPattern,
@@ -35,7 +46,7 @@ public struct Finisher {
         config: PipelineConfiguration,
         exposure: Float,
         in commandBuffer: MTLCommandBuffer
-    ) throws -> MTLTexture {
+    ) throws -> (display: MTLTexture, hdr: MTLTexture) {
         let w = mergedBayer.width, h = mergedBayer.height
         let red = cfa.redPosition
 
@@ -81,7 +92,7 @@ public struct Finisher {
             enc.setTexture(blurLuma, index: 1)
         }
 
-        // 5. local + global tone, saturation, sRGB → display
+        // 5. SDR: local + global tone, saturation, sRGB → display
         let display = try context.makeRGBA(width: w, height: h)
         try context.run("tone_finish", gridWidth: w, gridHeight: h, in: commandBuffer) { enc in
             enc.setTexture(linear, index: 0)
@@ -90,6 +101,20 @@ public struct Finisher {
             enc.setTexture(display, index: 3)
             enc.setBytes(&fparams, length: MemoryLayout<FinishParams>.stride, index: 0)
         }
-        return display
+
+        // 6. HDR: the same shadow/mid look but with highlights extended toward an HDR ceiling, output
+        //    linear — the companion the gain map is built from. Reuses the luma/blur base layer.
+        let hdr = try context.makeRGBA(width: w, height: h)
+        var hparams = HDRToneParams(width: UInt32(w), height: UInt32(h),
+                                    localContrast: fparams.localContrast,
+                                    saturation: fparams.saturation, ceiling: 4.0)
+        try context.run("tone_hdr", gridWidth: w, gridHeight: h, in: commandBuffer) { enc in
+            enc.setTexture(linear, index: 0)
+            enc.setTexture(luma, index: 1)
+            enc.setTexture(blurLuma, index: 2)
+            enc.setTexture(hdr, index: 3)
+            enc.setBytes(&hparams, length: MemoryLayout<HDRToneParams>.stride, index: 0)
+        }
+        return (display, hdr)
     }
 }
