@@ -4,6 +4,13 @@ import Metal
 import CoreGraphics
 import RawloomCore
 
+/// Which "显影" surface is currently presented over the camera.
+enum RevealSurface: Identifiable {
+    case sequence    // cinematic auto-play reveal
+    case inspector   // manual stage scrubber
+    var id: Int { self == .sequence ? 0 : 1 }
+}
+
 /// Drives the camera screen. A shutter press captures a burst, then hands it to a **serial background
 /// queue** for processing — the viewfinder stays live and responsive (you can keep shooting), and each
 /// finished frame lands in the bottom-left thumbnail. Processing is serialised so concurrent bursts
@@ -17,6 +24,11 @@ final class CameraViewModel: ObservableObject {
     @Published var latestResult: CGImage?       // newest finished image (thumbnail + tap-to-view)
     @Published var resultOrientation: Image.Orientation = .up
     @Published var showingResult = false        // full-screen view of `latestResult`
+    @Published var revealMode = false           // opt-in: capture per-stage previews for the inspector
+    @Published var stages: [StagePreview] = []   // newest result's pipeline stages (empty unless reveal)
+    @Published var revealSurface: RevealSurface? = nil  // which "显影" surface is presented (if any)
+    @Published var initialRevealStage: StagePreview.Kind? = nil  // inspector screenshot hook (RAWLOOM_REVEAL_STAGE)
+    @Published var revealSeqPinned: StagePreview.Kind? = nil     // sequence screenshot hook (RAWLOOM_REVEAL_SEQ)
     @Published var debugText = ""
     @Published var lastJPEGURL: URL?
     @Published var lastDNGURL: URL?
@@ -39,6 +51,19 @@ final class CameraViewModel: ObservableObject {
         if usingSyntheticSource { statusText = "Simulator: synthetic capture" }
         // Used by scripts/screenshots.sh to capture a processed result automatically.
         let env = ProcessInfo.processInfo
+        // Opt-in stage capture: the cinematic reveal auto-plays after the shot. Mirrors -autoshoot.
+        if env.arguments.contains("-reveal") || env.environment["RAWLOOM_REVEAL"] != nil {
+            revealMode = true
+        }
+        // Screenshot hooks: pin the inspector (…_STAGE) or the reveal sequence (…_SEQ) at one stage.
+        if let raw = env.environment["RAWLOOM_REVEAL_STAGE"], let kind = StagePreview.Kind(rawValue: raw) {
+            revealMode = true
+            initialRevealStage = kind
+        }
+        if let raw = env.environment["RAWLOOM_REVEAL_SEQ"], let kind = StagePreview.Kind(rawValue: raw) {
+            revealMode = true
+            revealSeqPinned = kind
+        }
         if env.arguments.contains("-autoshoot") || env.environment["RAWLOOM_AUTOSHOOT"] != nil {
             await shutter()
         }
@@ -52,10 +77,11 @@ final class CameraViewModel: ObservableObject {
         isCapturing = true
         statusText = mode == .night ? "Capturing night burst…" : "Capturing…"
         let mode = self.mode
+        let reveal = self.revealMode
         do {
             let frames = try await captureSource.captureBurst(mode: mode)
             isCapturing = false
-            enqueueProcessing(frames: frames, mode: mode)
+            enqueueProcessing(frames: frames, mode: mode, reveal: reveal)
         } catch {
             isCapturing = false
             statusText = "Error: \(error.localizedDescription)"
@@ -64,26 +90,33 @@ final class CameraViewModel: ObservableObject {
 
     // MARK: Background processing
 
-    private func enqueueProcessing(frames: [RawFrame], mode: CaptureMode) {
+    private func enqueueProcessing(frames: [RawFrame], mode: CaptureMode, reveal: Bool) {
         guard let pipeline else { return }
         processingCount += 1
         statusText = "Processing…"
         let synthetic = usingSyntheticSource
         processingQueue.async { [weak self] in
             do {
-                let processed = try pipeline.process(frames: frames, config: .preset(for: mode))
+                let processed = try pipeline.process(frames: frames, config: .preset(for: mode),
+                                                     captureStages: reveal)
                 let (image, means) = Self.makeCGImage(from: processed.displayImage, context: pipeline.context)
                 let debug = Self.debugReadout(processed: processed, outputMeans: means)
+                let stages = processed.stages   // Sendable value types — safe to hand to the main actor
                 let urls = try? Self.save(processed: processed, context: pipeline.context)
                 DispatchQueue.main.async {
                     guard let self else { return }
                     self.latestResult = image
                     self.resultOrientation = synthetic ? .up : .right
                     self.debugText = debug
+                    self.stages = stages
                     self.lastJPEGURL = urls?.jpeg
                     self.lastDNGURL = urls?.dng
                     self.processingCount -= 1
                     self.statusText = self.processingCount > 0 ? "Processing \(self.processingCount)…" : "Done"
+                    if reveal && !stages.isEmpty {
+                        // Inspector if a stage was pinned for screenshots; otherwise the cinematic reveal.
+                        self.revealSurface = self.initialRevealStage != nil ? .inspector : .sequence
+                    }
                 }
             } catch {
                 DispatchQueue.main.async {

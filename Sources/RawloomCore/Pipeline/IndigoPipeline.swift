@@ -16,6 +16,9 @@ public struct ProcessedImage {
     public let referenceMetadata: RawImageMetadata
     /// The exposure gain ("memorised gain") applied in finishing.
     public let exposureGain: Float
+    /// Per-stage previews for the "how it was made" inspector. Empty unless `process` was called with
+    /// `captureStages: true`.
+    public let stages: [StagePreview]
 }
 
 /// End-to-end orchestration of the Project-Indigo pipeline:
@@ -36,22 +39,39 @@ public final class IndigoPipeline {
     }
 
     /// Process a captured burst into a finished image + merged raw.
-    public func process(frames: [RawFrame], config: PipelineConfiguration) throws -> ProcessedImage {
+    ///
+    /// - Parameter captureStages: when `true`, the pipeline also emits a `StagePreview` per stage for
+    ///   the "how it was made" inspector. This is **opt-in** — the default path pins no extra textures
+    ///   and does no read-back, so normal capture is unchanged.
+    public func process(frames: [RawFrame], config: PipelineConfiguration,
+                        captureStages: Bool = false) throws -> ProcessedImage {
         precondition(!frames.isEmpty, "cannot process an empty burst")
 
         // 1. choose the reference (sharpest of the first few frames).
         let referenceIndex = ReferenceSelector.selectIndex(from: frames)
         let referenceMeta = frames[referenceIndex].metadata
 
+        let collector: StageCollector?
+        if captureStages {
+            let c = StageCollector()
+            c.frameCount = frames.count
+            c.referenceIndex = referenceIndex
+            c.config = config
+            collector = c
+        } else {
+            collector = nil
+        }
+
         let commandBuffer = try context.makeCommandBuffer()
 
         // 2. robust multi-frame merge → low-noise linear Bayer.
         let merger = Merger(context: context)
         let merge = try merger.merge(frames: frames, referenceIndex: referenceIndex,
-                                     config: config, in: commandBuffer)
+                                     config: config, in: commandBuffer, stages: collector)
 
         // 3. finishing → display image. Exposure gain compensates the capture under-exposure.
         let exposure = Self.exposureGain(for: frames[referenceIndex], config: config)
+        collector?.exposureGain = exposure
         let finisher = Finisher(context: context)
         let display = try finisher.finish(
             mergedBayer: merge.mergedBayer,
@@ -60,11 +80,17 @@ public final class IndigoPipeline {
             colorMatrix: referenceMeta.colorMatrix,
             config: config,
             exposure: exposure,
-            in: commandBuffer
+            in: commandBuffer,
+            stages: collector
         )
 
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
+
+        // 4. build the per-stage previews from the pinned textures (after the GPU has finished).
+        let stages = collector.map {
+            StageRenderer.render(collector: $0, frames: frames, display: display, context: context)
+        } ?? []
 
         return ProcessedImage(
             displayImage: display,
@@ -72,7 +98,8 @@ public final class IndigoPipeline {
             width: merge.width, height: merge.height,
             referenceIndex: referenceIndex,
             referenceMetadata: referenceMeta,
-            exposureGain: exposure
+            exposureGain: exposure,
+            stages: stages
         )
     }
 

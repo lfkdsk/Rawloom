@@ -30,11 +30,15 @@ public struct Merger {
     public let context: MetalContext
     public init(context: MetalContext) { self.context = context }
 
+    /// - Parameter stages: optional capture sink. When non-nil, intermediate textures (reference
+    ///   planes, a representative motion field, the final weight sum, the merged planes) are pinned for
+    ///   the stage previews. `nil` ⇒ no extra work.
     public func merge(
         frames: [RawFrame],
         referenceIndex: Int,
         config: PipelineConfiguration,
-        in commandBuffer: MTLCommandBuffer
+        in commandBuffer: MTLCommandBuffer,
+        stages: StageCollector? = nil
     ) throws -> MergeResult {
         precondition(!frames.isEmpty)
         let refFrame = frames[referenceIndex]
@@ -46,6 +50,7 @@ public struct Merger {
         let refBayer = try RawIngest.normalize(refFrame, context: context, in: commandBuffer)
         let refPyramid = try PyramidBuilder.build(normalizedBayer: refBayer, context: context, in: commandBuffer)
         let refPlanes = try extractPlanes(refBayer, in: commandBuffer)
+        stages?.referencePlanes = refPlanes
 
         // Accumulators seeded with the reference (weight 1). Ping-ponged across alternates.
         var accSrc = try context.makeRGBA(width: pw, height: ph)
@@ -64,6 +69,7 @@ public struct Merger {
             let altPyramid = try PyramidBuilder.build(normalizedBayer: altBayer, context: context, in: commandBuffer)
             let field = try aligner.align(reference: refPyramid, alternate: altPyramid,
                                           config: config, in: commandBuffer)
+            if stages != nil, stages?.motionField == nil { stages?.motionField = field }
             let altPlanes = try extractPlanes(altBayer, in: commandBuffer)
 
             var params = MergeParams(
@@ -87,8 +93,12 @@ public struct Merger {
             swap(&wSrc, &wDst)
         }
 
+        // After the loop, accSrc/wSrc hold the final accumulators (the last swap landed them here).
+        stages?.weight = wSrc
+
         // Finalise → merged planes → merged Bayer.
         let mergedPlanes = try context.makeRGBA(width: pw, height: ph)
+        stages?.mergedPlanes = mergedPlanes
         try context.run("merge_finalize", gridWidth: pw, gridHeight: ph, in: commandBuffer) { enc in
             enc.setTexture(accSrc, index: 0)
             enc.setTexture(wSrc, index: 1)
