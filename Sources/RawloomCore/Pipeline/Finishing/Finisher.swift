@@ -45,7 +45,8 @@ public struct Finisher {
         colorMatrix: ColorMatrix,
         config: PipelineConfiguration,
         exposure: Float,
-        in commandBuffer: MTLCommandBuffer
+        in commandBuffer: MTLCommandBuffer,
+        stages: StageCollector? = nil
     ) throws -> (display: MTLTexture, hdr: MTLTexture) {
         let w = mergedBayer.width, h = mergedBayer.height
         let red = cfa.redPosition
@@ -59,6 +60,7 @@ public struct Finisher {
             enc.setTexture(camRGB, index: 1)
             enc.setBytes(&dparams, length: MemoryLayout<DemosaicParams>.stride, index: 0)
         }
+        stages?.camRGB = camRGB
 
         var fparams = FinishParams(
             width: UInt32(w), height: UInt32(h),
@@ -79,6 +81,7 @@ public struct Finisher {
             enc.setTexture(linear, index: 1)
             enc.setBytes(&fparams, length: MemoryLayout<FinishParams>.stride, index: 0)
         }
+        stages?.linearRGB = linear
 
         // 3–4. luma → blurred luma (tone-map base layer)
         let luma = try context.makeFloat(width: w, height: h)

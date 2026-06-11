@@ -42,6 +42,31 @@ struct CameraScreen: View {
         .sheet(isPresented: $showSettings) { SettingsSheet(vm: viewModel) }
         .task { await viewModel.onAppear() }
         .onDisappear { viewModel.onDisappear() }
+        // 显影 — the "how it was made" reveal. One cover, presented while a surface is set; the inner
+        // switch swaps sequence↔inspector in place (changing a `fullScreenCover(item:)` id mid-present
+        // doesn't reliably re-render).
+        .fullScreenCover(isPresented: Binding(
+            get: { viewModel.revealSurface != nil },
+            set: { if !$0 { viewModel.revealSurface = nil } }
+        )) {
+            Group {
+                if viewModel.stages.isEmpty {
+                    Ink.ground.ignoresSafeArea().onAppear { viewModel.revealSurface = nil }
+                } else if viewModel.revealSurface == .inspector {
+                    StageInspectorView(
+                        stages: viewModel.stages, orientation: viewModel.resultOrientation,
+                        initialStage: viewModel.initialRevealStage,
+                        onReplay: { viewModel.revealSurface = .sequence },
+                        onClose: { viewModel.revealSurface = nil })
+                } else {
+                    RevealSequenceView(
+                        stages: viewModel.stages, orientation: viewModel.resultOrientation,
+                        pinnedStage: viewModel.revealSeqPinned,
+                        onFinish: { viewModel.revealSurface = nil },
+                        onInspect: { viewModel.revealSurface = .inspector })
+                }
+            }
+        }
     }
 
     // MARK: Viewfinder
@@ -107,6 +132,12 @@ struct CameraScreen: View {
             formatChip
             iconChip(viewModel.flashMode.icon, active: viewModel.flashMode != .off) { viewModel.cycleFlash() }
             Spacer()
+            // 显影: arm per-stage capture for the next shot (opt-in — normal capture stays fast); the
+            // play chip re-runs the cinematic reveal of the last reveal capture.
+            iconChip("rectangle.stack", active: viewModel.revealMode) { viewModel.revealMode.toggle() }
+            if !viewModel.stages.isEmpty {
+                iconChip("play.rectangle", active: false) { viewModel.revealSurface = .sequence }
+            }
             iconChip("grid", active: viewModel.showGrid) { viewModel.toggleGrid() }
             iconChip("level", active: viewModel.showLevel) { viewModel.toggleLevel() }
             iconChip("chart.bar.xaxis", active: viewModel.showHistogram) { viewModel.toggleHistogram() }

@@ -35,10 +35,16 @@ public struct Merger {
     /// memory is independent of the burst length — that's what lets Night mode use a long burst without
     /// exhausting memory or tripping the GPU watchdog (the old single-command-buffer path held every
     /// frame's textures at once → OOM). See `docs/PIPELINE.md` §4.
+    ///
+    /// - Parameter stages: optional capture sink. When non-nil, intermediate textures (reference
+    ///   planes, a representative motion field, the final weight sum, the merged planes) are pinned for
+    ///   the stage previews; everything is complete by return because each buffer is waited on. `nil`
+    ///   ⇒ no extra work.
     public func merge(
         frames: [RawFrame],
         referenceIndex: Int,
-        config: PipelineConfiguration
+        config: PipelineConfiguration,
+        stages: StageCollector? = nil
     ) throws -> MergeResult {
         precondition(!frames.isEmpty)
         let refFrame = frames[referenceIndex]
@@ -51,6 +57,8 @@ public struct Merger {
         let refBayer = try RawIngest.normalize(refFrame, context: context, in: setupCB)
         let refPyramid = try PyramidBuilder.build(normalizedBayer: refBayer, context: context, in: setupCB)
         let refPlanes = try extractPlanes(refBayer, in: setupCB)
+        stages?.referencePlanes = refPlanes
+
         // Accumulators seeded with the reference (weight 1). Ping-ponged across alternates.
         var accSrc = try context.makeRGBA(width: pw, height: ph)
         var accDst = try context.makeRGBA(width: pw, height: ph)
@@ -72,6 +80,7 @@ public struct Merger {
             let altPyramid = try PyramidBuilder.build(normalizedBayer: altBayer, context: context, in: cb)
             let field = try aligner.align(reference: refPyramid, alternate: altPyramid,
                                           config: config, in: cb)
+            if stages != nil, stages?.motionField == nil { stages?.motionField = field }
             let altPlanes = try extractPlanes(altBayer, in: cb)
 
             var params = MergeParams(
@@ -97,8 +106,12 @@ public struct Merger {
             swap(&wSrc, &wDst)
         }
 
+        // After the loop, accSrc/wSrc hold the final accumulators (the last swap landed them here).
+        stages?.weight = wSrc
+
         // --- Finalise → merged planes → merged Bayer. ---
         let mergedPlanes = try context.makeRGBA(width: pw, height: ph)
+        stages?.mergedPlanes = mergedPlanes
         let mergedBayer = try context.makeFloat(width: width, height: height)
         let finalCB = try context.makeCommandBuffer()
         try context.run("merge_finalize", gridWidth: pw, gridHeight: ph, in: finalCB) { enc in

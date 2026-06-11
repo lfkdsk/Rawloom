@@ -1,4 +1,5 @@
 import SwiftUI
+import RawloomCore
 
 /// Settings panel behind the gear: capture options + viewfinder aids in one place.
 struct SettingsSheet: View {
@@ -9,6 +10,10 @@ struct SettingsSheet: View {
         NavigationStack {
             Form {
                 Section("Capture") {
+                    Picker("Mode", selection: $vm.mode) {
+                        Text("Photo").tag(CaptureMode.photo)
+                        Text("Night").tag(CaptureMode.night)
+                    }
                     Picker("Aspect ratio", selection: $vm.aspect) {
                         ForEach(AspectRatio.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                     }

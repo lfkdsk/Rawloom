@@ -39,6 +39,8 @@ final class SyntheticCaptureSource: CaptureSource {
 
     func captureBurst(mode: CaptureMode) async throws -> [RawFrame] {
         shotCounter &+= 1
+        // 512² keeps simulator captures snappy (1024² makes the burst take many seconds in the sim).
+        // The full-res stages render at native 512; real devices capture millions of px (fully crisp).
         let scene = SyntheticScene.gradientBlobs(width: 512, height: 512)
         let spec = SyntheticBurstSpec(
             frameCount: mode == .night ? 16 : 8,
